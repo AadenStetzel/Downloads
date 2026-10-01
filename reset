@@ -1,0 +1,51 @@
+#!/bin/bash
+#reset.sh
+set -e
+
+
+SERVICE_NAME="network-watchdog"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+CPU_SCRIPT="/tmp/lab-cpu-worker.sh"
+MEMORY_SCRIPT="/tmp/lab-memory-worker.py"
+STATE_DIR="/tmp/process-management-lab"
+PID_FILE="${STATE_DIR}/pids"
+
+
+if [ "$EUID" -eq 0 ]; then
+    echo "ERROR: Do not run this script with sudo."
+    echo "Run it as your normal student account."
+    exit 1
+fi
+echo "Resetting Process Management Lab..."
+
+
+# Stop and remove systemd service
+if systemctl list-unit-files | grep -q "^${SERVICE_NAME}.service"; then
+    sudo systemctl disable --now "$SERVICE_NAME" 2>/dev/null || true
+    sudo rm -f "$SERVICE_FILE"
+    sudo systemctl daemon-reload
+fi
+
+
+# Kill known workload processes
+if [ -f "$PID_FILE" ]; then
+    source "$PID_FILE"
+    kill "$CPU_PID" 2>/dev/null || true
+    kill "$MEMORY_PID" 2>/dev/null || true
+fi
+
+
+# Remove temporary files
+rm -f "$CPU_SCRIPT"
+rm -f "$MEMORY_SCRIPT"
+rm -f "$PID_FILE"
+rmdir "$STATE_DIR" 2>/dev/null || true
+
+
+# Clean up lab Firefox instances
+pkill -f "firefox --headless about:blank" 2>/dev/null || true
+sudo userdel lab-worker
+
+
+sudo systemctl enable --now ssh.service &>/dev/null
+echo "Lab scenario reset."

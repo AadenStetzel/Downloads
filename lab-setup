@@ -1,0 +1,136 @@
+#!/bin/bash
+#setup-lab.sh
+set -e
+
+
+# Configuration
+SERVICE_NAME="lab-network-blocker"
+SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+CPU_SCRIPT="/tmp/lab-cpu-worker.sh"
+MEMORY_SCRIPT="/tmp/lab-memory-worker.py"
+STATE_DIR="/tmp/process-management-lab"
+PID_FILE="${STATE_DIR}/pids"
+mkdir -p "$STATE_DIR"
+sudo useradd lab-worker
+
+
+# Check that student account is being used
+if [ "$EUID" -eq 0 ]; then
+    echo "ERROR: Do not run this script with sudo."
+    echo "Run it as your normal student account:"
+    exit 1
+fi
+echo "PROCESS MANAGEMENT LAB - SCENARIO SETUP"
+
+
+# Prevent accidental duplicate setup
+if [ -f "$PID_FILE" ] || systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
+    echo "A lab scenario appears to already be running."
+    echo "If you need to reset the scenario, run: ./reset-lab.sh"
+    exit 1
+fi
+
+
+# Check Firefox installed
+echo "[1/5] Checking system..."
+if ! command -v firefox >/dev/null 2>&1; then
+    echo "ERROR: Firefox was not found."
+    echo "Please install Firefox before running the script."
+    exit 1
+fi
+
+
+# Start user-owned Firefox
+echo "[2/5] Starting application processes..."
+firefox --headless about:blank \
+    >/dev/null 2>&1 &
+USER_FIREFOX_PID=$!
+sleep 2
+
+
+# Start root-owned Firefox
+sudo -u lab-worker firefox --headless about:blank \
+    >/dev/null 2>&1 &
+ROOT_FIREFOX_LAUNCH_PID=$!
+sleep 3
+
+
+# Create controlled CPU workload
+echo "[3/5] Creating a controlled CPU workload..."
+cat > "$CPU_SCRIPT" << 'EOF'
+#!/bin/bash
+# A deliberately throttled CPU workload.
+# This performs a small amount of computation and then sleeps.
+while true
+do
+    for i in {1..1000}
+    do
+        x=$((i * i))
+    done
+    sleep 0.05
+done
+EOF
+chmod +x "$CPU_SCRIPT"
+"$CPU_SCRIPT" >/dev/null 2>&1 &
+CPU_PID=$!
+
+
+# Create controlled memory workload
+echo "[4/5] Creating a controlled memory workload..."
+cat > "$MEMORY_SCRIPT" << 'EOF'
+#!/usr/bin/env python3
+# Allocate approximately 512 MB.
+# This is intentionally small so that the lab is safe on
+# Raspberry Pi systems with limited memory.
+SIZE = 500 * 1024 * 1024
+data = bytearray(SIZE)
+# Touch the memory so the allocation is actually resident.
+for i in range(0, len(data), 4096):
+    data[i] = 1
+# Keep the process alive.
+import time
+while True:
+    time.sleep(60)
+EOF
+chmod +x "$MEMORY_SCRIPT"
+python3 "$MEMORY_SCRIPT" >/dev/null 2>&1 &
+
+
+MEMORY_PID=$!
+
+
+# Create systemd service
+echo "[5/5] Creating system service..."
+sudo tee "$SERVICE_FILE" > /dev/null << EOF
+[Unit]
+Description=SSH blocker for Process Management Lab
+After=network.target
+[Service]
+Type=simple
+ExecStart=/bin/bash -c 'while true; do sudo systemctl disable --now ssh.service; sleep 20; done'
+Restart=always
+RestartSec=2
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl start "$SERVICE_NAME" &>/dev/null
+
+
+# Save known PIDs
+cat > "$PID_FILE" << EOF
+USER_FIREFOX_PID=$USER_FIREFOX_PID
+ROOT_FIREFOX_LAUNCH_PID=$ROOT_FIREFOX_LAUNCH_PID
+CPU_PID=$CPU_PID
+MEMORY_PID=$MEMORY_PID
+EOF
+
+
+echo "SCENARIO READY"
+echo "The system has been prepared for investigation."
+echo "You should NOT assume that every process you find should be terminated."
+echo "See the lab manual for the objectives of your investigation."
+echo "IMPORTANT:"
+echo "  * Do not terminate processes unless the lab specifically asks you to."
+echo "You may run ./reset.sh to clear all modifications from your Pi."
+echo "When you believe you have completed the lab, your TA will verify the system."
